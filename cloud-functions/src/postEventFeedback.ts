@@ -78,8 +78,12 @@ export const sendPostEventFeedback = functions.pubsub
                     }
                     transaction.update(eventDoc.ref, { feedbackRequestSent: true });
                 });
-            } catch (e) {
-                console.log(`Skipping "${event.title}" — already claimed`);
+            } catch (e: any) {
+                if (e?.message === "already_claimed") {
+                    console.log(`Skipping "${event.title}" — already claimed`);
+                    continue;
+                }
+                console.error(`Transaction failed for "${event.title}":`, e);
                 continue;
             }
 
@@ -97,12 +101,10 @@ export const sendPostEventFeedback = functions.pubsub
 
                 if (email && email !== "-") {
                     const success = await sendEmail(name, email, event.title, eventDoc.id);
-                    // If any email fails, we note it so we don't mark as fully done
                     if (!success) allSent = false;
                 }
             }
 
-            // Only mark with timestamp if all emails went through
             if (allSent) {
                 await eventDoc.ref.update({
                     feedbackRequestSentAt: new Date().toISOString(),
