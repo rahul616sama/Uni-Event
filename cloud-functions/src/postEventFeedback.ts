@@ -48,8 +48,9 @@ async function claimEvent(ref: admin.firestore.DocumentReference): Promise<boole
             t.update(ref, { feedbackRequestSent: true });
         });
         return true;
-    } catch {
-        return false;
+    } catch (e: any) {
+        if (e?.message === "claimed") return false;
+        throw e; // rethrow unexpected errors
     }
 }
 
@@ -81,15 +82,12 @@ export const sendPostEventFeedback = functions.pubsub
         for (const eventDoc of events.docs) {
             const event = eventDoc.data();
 
-            // Skip if end time is invalid
             const endTime = getEndTime(event);
             if (!endTime || now <= endTime) continue;
 
-            // Skip if already claimed by another run
             const claimed = await claimEvent(eventDoc.ref);
             if (!claimed) continue;
 
-            // Send emails and save timestamp
             await notifyParticipants(db, eventDoc.id, event.title);
             await eventDoc.ref.update({ feedbackRequestSentAt: new Date().toISOString() });
 
