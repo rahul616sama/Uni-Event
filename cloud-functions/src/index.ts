@@ -14,3 +14,4 @@ export * from './backfillEventAnalytics';
 export * from './feedbackSentimentAnalysis';
 export * from './computeShowUpRatios';
 export * from './postEventFeedback';
+export * from './branchReport';
