@@ -2,35 +2,46 @@ import * as admin from 'firebase-admin';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-// Connect to Firebase
 admin.initializeApp();
 const db = admin.firestore();
 
-// This is where we keep track of which migrations have already run
 const TRACKER_DOC = 'migrations/applied';
 
-// Get the list of migrations that have already been applied
-async function getAppliedMigrations() {
+// Get list of already applied migrations
+async function getAppliedMigrations(): Promise<string[]> {
     const doc = await db.doc(TRACKER_DOC).get();
     if (!doc.exists) return [];
     return doc.data()?.applied ?? [];
 }
 
-// Save a migration name to the tracker so it won't run again
-async function markAsDone(migrationName: string, alreadyApplied: string[]) {
-    await db.doc(TRACKER_DOC).set({
-        applied: [...alreadyApplied, migrationName],
+// Atomically claim a migration slot to prevent duplicate runs
+async function claimMigration(migrationName: string): Promise<boolean> {
+    const ref = db.doc(TRACKER_DOC);
+    try {
+        await db.runTransaction(async t => {
+            const doc = await t.get(ref);
+            const applied: string[] = doc.exists ? doc.data()?.applied ?? [] : [];
+            if (applied.includes(migrationName)) throw new Error('already_applied');
+            t.set(ref, { applied: [...applied, migrationName] });
+        });
+        return true;
+    } catch (e: any) {
+        if (e?.message === 'already_applied') return false;
+        throw e;
+    }
+}
+
+// Remove a migration from tracker (for rollback)
+async function unclaimMigration(migrationName: string): Promise<void> {
+    const ref = db.doc(TRACKER_DOC);
+    await db.runTransaction(async t => {
+        const doc = await t.get(ref);
+        const applied: string[] = doc.exists ? doc.data()?.applied ?? [] : [];
+        t.set(ref, { applied: applied.filter(m => m !== migrationName) });
     });
 }
 
-// Remove a migration from the tracker (used when rolling back)
-async function markAsUndone(migrationName: string, alreadyApplied: string[]) {
-    await db.doc(TRACKER_DOC).set({
-        applied: alreadyApplied.filter(m => m !== migrationName),
-    });
-}
-
-// Run all pending migrations (up)
+// Run all pending migrations
 async function runMigrations() {
     const applied = await getAppliedMigrations();
 
@@ -50,22 +61,23 @@ async function runMigrations() {
             continue;
         }
 
-        console.log(`Running: ${file}`);
+        // Claim the migration atomically before running
+        const claimed = await claimMigration(file);
+        if (!claimed) {
+            console.log(`Skipping ${file} — already claimed by another process.`);
+            continue;
+        }
 
+        console.log(`Running: ${file}`);
         const migration = await import(path.join(__dirname, file));
         await migration.up(db);
-
-        // Add to local list first, then save to Firestore
-        applied.push(file);
-        await markAsDone(file, applied);
-
         console.log(`Finished: ${file} ✓`);
     }
 
     console.log('All migrations done!');
 }
 
-// Rollback the last applied migration (down)
+// Rollback the last applied migration
 async function rollbackMigration() {
     const applied = await getAppliedMigrations();
 
@@ -74,25 +86,20 @@ async function rollbackMigration() {
         return;
     }
 
-    // Get the last applied migration
     const lastFile = applied[applied.length - 1];
-
     console.log(`Rolling back: ${lastFile}`);
 
     const migration = await import(path.join(__dirname, lastFile));
-
     if (!migration.down) {
-        console.error(`No down() function found in ${lastFile}`);
+        console.error(`No down() function in ${lastFile}`);
         process.exit(1);
     }
 
     await migration.down(db);
-    await markAsUndone(lastFile, applied);
-
+    await unclaimMigration(lastFile);
     console.log(`Rolled back: ${lastFile} ✓`);
 }
 
-// Check command line argument to decide what to do
 const command = process.argv[2];
 
 if (command === 'down') {
