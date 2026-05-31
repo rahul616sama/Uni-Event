@@ -1,5 +1,8 @@
 import * as admin from "firebase-admin";
 import * as functions from "firebase-functions";
+import { enforceAppCheck } from "./middleware/appCheck";
+
+// Assumes admin.initializeApp() is called in index.ts
 import { checkRateLimit, RATE_LIMITS } from "./middleware/rateLimiter";
 
 /**
@@ -20,6 +23,11 @@ export const setRole = functions.https.onCall(async (data, context) => {
     );
   }
 
+  enforceAppCheck(context);
+
+  // Check if caller is admin
+  // Note: For initial bootstrap, this check might need to be bypassed temporarily or the first admin set manually.
+  // We will assume the first admin is set via Firebase Console or script.
   // Check if caller is admin BEFORE rate limiting
   if (!context.auth.token.admin) {
     throw new functions.https.HttpsError(

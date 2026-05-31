@@ -1,6 +1,7 @@
 import * as admin from 'firebase-admin';
 import * as functions from 'firebase-functions';
 import { FieldValue } from 'firebase-admin/firestore';
+import { enforceAppCheck } from './middleware/appCheck';
 
 interface Participant {
     name?: string;
@@ -104,6 +105,8 @@ export const sendBulkEmails = functions.https.onCall(async (data: SendBulkEmails
     const { uid } = context.auth;
     const token = context.auth.token;
 
+    enforceAppCheck(context);
+
     if (!token.admin && !token.club) {
         throw new functions.https.HttpsError('permission-denied', 'Only organizers can send bulk emails.');
     }
@@ -140,7 +143,6 @@ export const sendBulkEmails = functions.https.onCall(async (data: SendBulkEmails
     const { serviceId, publicKey } = validateEnvConfig();
     await checkRateLimit(db, uid, emailCount);
 
-    // Create preliminary audit log
     let auditDocRef: admin.firestore.DocumentReference | null = null;
     try {
         auditDocRef = await db.collection('email_audit_logs').add({
@@ -155,12 +157,10 @@ export const sendBulkEmails = functions.https.onCall(async (data: SendBulkEmails
         console.error('Failed to create audit log:', e);
     }
 
-    // Send all emails in parallel
     const results = await Promise.all(validParticipants.map(p => sendSingleEmail(p, subject, message, templateId, templateData, serviceId, publicKey)));
     const successCount = results.filter(Boolean).length;
     const failureCount = results.length - successCount;
 
-    // Update audit log
     if (auditDocRef) {
         await auditDocRef.update({ successCount, failureCount, status: 'completed' }).catch(e => console.error('Failed to update audit log:', e));
     }
