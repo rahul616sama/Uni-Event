@@ -1,27 +1,63 @@
 import * as admin from 'firebase-admin';
 
-// ─────────────────────────────────────────────────────────
 // Migration 001: Add feedbackRequestSent field to all events
-//
-// WHY: Some older events don't have this field at all.
-// The Cloud Function that sends feedback emails needs it.
-// This migration sets it to false for any event missing it.
-// ─────────────────────────────────────────────────────────
+// Uses batching for faster writes (max 500 per batch)
 
 export async function up(db: admin.firestore.Firestore) {
-    // Get all events that don't have the feedbackRequestSent field
     const eventsSnap = await db.collection('events').get();
 
-    // Go through each event
+    // Process in batches of 500 (Firestore limit)
+    const batchSize = 500;
+    let batch = db.batch();
+    let count = 0;
+
     for (const eventDoc of eventsSnap.docs) {
         const data = eventDoc.data();
 
         // Only update if the field is missing
         if (data.feedbackRequestSent === undefined) {
-            await eventDoc.ref.update({
-                feedbackRequestSent: false,
-            });
-            console.log(`Updated event: ${data.title ?? eventDoc.id}`);
+            batch.update(eventDoc.ref, { feedbackRequestSent: false });
+            count++;
+
+            // Commit batch when it reaches 500
+            if (count % batchSize === 0) {
+                await batch.commit();
+                batch = db.batch();
+            }
         }
     }
+
+    // Commit any remaining updates
+    if (count % batchSize !== 0) {
+        await batch.commit();
+    }
+
+    console.log(`Updated ${count} events.`);
+}
+
+export async function down(db: admin.firestore.Firestore) {
+    // Undo: remove the feedbackRequestSent field from all events
+    const eventsSnap = await db.collection('events').get();
+
+    const batchSize = 500;
+    let batch = db.batch();
+    let count = 0;
+
+    for (const eventDoc of eventsSnap.docs) {
+        batch.update(eventDoc.ref, {
+            feedbackRequestSent: admin.firestore.FieldValue.delete(),
+        });
+        count++;
+
+        if (count % batchSize === 0) {
+            await batch.commit();
+            batch = db.batch();
+        }
+    }
+
+    if (count % batchSize !== 0) {
+        await batch.commit();
+    }
+
+    console.log(`Removed feedbackRequestSent from ${count} events.`);
 }

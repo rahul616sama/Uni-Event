@@ -7,7 +7,6 @@ admin.initializeApp();
 const db = admin.firestore();
 
 // This is where we keep track of which migrations have already run
-// So we never run the same migration twice
 const TRACKER_DOC = 'migrations/applied';
 
 // Get the list of migrations that have already been applied
@@ -24,15 +23,21 @@ async function markAsDone(migrationName: string, alreadyApplied: string[]) {
     });
 }
 
-// Main function — finds all migration files and runs the ones not yet applied
+// Remove a migration from the tracker (used when rolling back)
+async function markAsUndone(migrationName: string, alreadyApplied: string[]) {
+    await db.doc(TRACKER_DOC).set({
+        applied: alreadyApplied.filter(m => m !== migrationName),
+    });
+}
+
+// Run all pending migrations (up)
 async function runMigrations() {
     const applied = await getAppliedMigrations();
 
-    // Get all .ts files in this folder except this runner file itself
     const files = fs
         .readdirSync(__dirname)
         .filter(f => f.endsWith('.ts') && f !== 'migrate.ts')
-        .sort(); // Sort so migrations always run in order (001, 002, 003...)
+        .sort();
 
     if (files.length === 0) {
         console.log('No migrations found.');
@@ -40,7 +45,6 @@ async function runMigrations() {
     }
 
     for (const file of files) {
-        // Skip if already applied
         if (applied.includes(file)) {
             console.log(`Already applied: ${file} — skipping.`);
             continue;
@@ -48,7 +52,6 @@ async function runMigrations() {
 
         console.log(`Running: ${file}`);
 
-        // Load and run the migration file
         const migration = await import(path.join(__dirname, file));
         await migration.up(db);
 
@@ -60,8 +63,46 @@ async function runMigrations() {
     }
 
     console.log('All migrations done!');
-    process.exit(0);
 }
 
-// Start
-runMigrations().
+// Rollback the last applied migration (down)
+async function rollbackMigration() {
+    const applied = await getAppliedMigrations();
+
+    if (applied.length === 0) {
+        console.log('No migrations to roll back.');
+        return;
+    }
+
+    // Get the last applied migration
+    const lastFile = applied[applied.length - 1];
+
+    console.log(`Rolling back: ${lastFile}`);
+
+    const migration = await import(path.join(__dirname, lastFile));
+
+    if (!migration.down) {
+        console.error(`No down() function found in ${lastFile}`);
+        process.exit(1);
+    }
+
+    await migration.down(db);
+    await markAsUndone(lastFile, applied);
+
+    console.log(`Rolled back: ${lastFile} ✓`);
+}
+
+// Check command line argument to decide what to do
+const command = process.argv[2];
+
+if (command === 'down') {
+    rollbackMigration().catch(err => {
+        console.error('Rollback error:', err);
+        process.exit(1);
+    });
+} else {
+    runMigrations().catch(err => {
+        console.error('Migration error:', err);
+        process.exit(1);
+    });
+}
