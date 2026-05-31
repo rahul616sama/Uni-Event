@@ -52,9 +52,9 @@ async function runMigrations() {
         const migration = await import(path.join(__dirname, file));
         await migration.up(db);
 
-        // Mark it as done
-       applied.push(file);
-       await markAsDone(file, applied);
+        // Add to local list first, then save to Firestore
+        applied.push(file);
+        await markAsDone(file, applied);
 
         console.log(`Finished: ${file} ✓`);
     }
@@ -64,7 +64,4 @@ async function runMigrations() {
 }
 
 // Start
-runMigrations().catch(err => {
-    console.error('Migration error:', err);
-    process.exit(1);
-});
+runMigrations().
